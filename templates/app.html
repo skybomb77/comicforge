@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>創作 — ComicForge 漫鍛</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * { margin:0; padding:0; box-sizing:border-box; }
+        :root { --bg:#0a0a0f; --panel:#12121a; --border:#1e1e2e; --text:#eee; --muted:#888; --accent:#f59e0b; }
+        body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif; background:var(--bg); color:var(--text); }
+        a { color:var(--accent); text-decoration:none; }
+        .nav { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; border-bottom:1px solid var(--border); }
+        .nav .logo { font-weight:700; }
+        .usage { font-size:.85rem; color:var(--muted); }
+        .usage strong { color:var(--accent); }
+        .badge { font-size:.65rem; font-weight:700; padding:3px 8px; border-radius:999px; letter-spacing:1px; background:rgba(245,158,11,.15); color:var(--accent); border:1px solid rgba(245,158,11,.3); }
+
+        .main { display:grid; grid-template-columns:380px 1fr; gap:24px; max-width:1200px; margin:0 auto; padding:24px; }
+        .panel { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:20px; }
+        .panel h3 { font-size:.95rem; margin-bottom:14px; }
+        .panel h3 i { color:var(--accent); margin-right:6px; }
+
+        .char-upload { border:2px dashed var(--border); border-radius:10px; padding:24px; text-align:center; cursor:pointer; margin-bottom:14px; }
+        .char-upload:hover { border-color:var(--accent); }
+        .char-upload i { font-size:2rem; color:var(--accent); display:block; margin-bottom:8px; }
+        .char-upload input { display:none; }
+        .char-preview { text-align:center; margin-bottom:14px; }
+        .char-preview img { width:120px; height:120px; object-fit:cover; border-radius:10px; border:2px solid var(--accent); }
+        .char-name { font-size:.85rem; color:var(--muted); margin-top:6px; }
+
+        .style-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-bottom:16px; }
+        .style-opt { padding:10px 6px; background:rgba(0,0,0,.2); border:1px solid var(--border); border-radius:8px; text-align:center; cursor:pointer; font-size:.8rem; }
+        .style-opt:hover { border-color:var(--accent); }
+        .style-opt.sel { border-color:var(--accent); background:rgba(245,158,11,.08); }
+        .style-opt .emoji { font-size:1.3rem; display:block; margin-bottom:4px; }
+
+        .panel-editor { margin-bottom:12px; }
+        .panel-editor .panel-num { font-size:.75rem; font-weight:700; color:var(--accent); margin-bottom:6px; }
+        .panel-editor textarea { width:100%; background:rgba(0,0,0,.3); border:1px solid var(--border); border-radius:8px; padding:10px; color:#fff; font-size:.9rem; resize:vertical; min-height:50px; outline:none; margin-bottom:6px; }
+        .panel-editor textarea:focus { border-color:var(--accent); }
+        .panel-editor .dialogue { min-height:35px; font-size:.85rem; }
+        .add-panel { width:100%; padding:10px; background:transparent; border:1px dashed var(--border); border-radius:8px; color:var(--muted); cursor:pointer; font-size:.85rem; margin-bottom:16px; }
+        .add-panel:hover { border-color:var(--accent); color:var(--accent); }
+
+        .gen-btn { width:100%; padding:14px; background:var(--accent); color:#0a0a0f; border:none; border-radius:10px; font-size:1rem; font-weight:700; cursor:pointer; }
+        .gen-btn:disabled { opacity:.5; }
+
+        .result { min-height:400px; }
+        .comic-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }
+        .comic-panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+        .comic-panel img { width:100%; aspect-ratio:1; object-fit:cover; }
+        .comic-panel .meta { padding:8px 10px; font-size:.75rem; color:var(--muted); }
+        .empty { text-align:center; padding:60px 20px; color:var(--muted); }
+        .empty i { font-size:3rem; opacity:.3; display:block; margin-bottom:12px; }
+        .spin { animation:spin 1s linear infinite; }
+        @keyframes spin { to { transform:rotate(360deg); } }
+    </style>
+</head>
+<body>
+<nav class="nav">
+    <div class="logo">📖 ComicForge 漫鍛</div>
+    <div style="display:flex;align-items:center;gap:14px;">
+        <span class="usage">已用 <strong>{{ user.panels_used }}</strong>/{{ user.panels_limit }} 格</span>
+        <span class="badge">{{ user.plan.upper() }}</span>
+        <a href="/dashboard" style="font-size:.85rem;">儀表板</a>
+        <a href="/api/logout" style="font-size:.85rem;color:var(--muted);">登出</a>
+    </div>
+</nav>
+
+<div class="main">
+    <div>
+        <!-- Character -->
+        <div class="panel" style="margin-bottom:14px;">
+            <h3><i class="fa-solid fa-user"></i> 角色參考圖</h3>
+            <div class="char-upload" id="charUpload" onclick="document.getElementById('charInput').click()">
+                <i class="fa-solid fa-user-plus"></i>
+                <p style="font-size:.85rem;">上傳角色圖（保持每格一致性）</p>
+                <input type="file" id="charInput" accept="image/*">
+            </div>
+            <div class="char-preview" id="charPreview" style="display:none;">
+                <img id="charImg" src="">
+                <div class="char-name" id="charName"></div>
+            </div>
+        </div>
+
+        <!-- Style -->
+        <div class="panel" style="margin-bottom:14px;">
+            <h3><i class="fa-solid fa-palette"></i> 漫畫風格</h3>
+            <div class="style-grid">
+                {% for s in styles %}
+                <div class="style-opt {% if loop.first %}sel{% endif %}" data-style="{{ s.id }}" onclick="selStyle(this)">
+                    <span class="emoji">{{ s.preview }}</span>
+                    {{ s.name }}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Panels -->
+        <div class="panel">
+            <h3><i class="fa-solid fa-layer-group"></i> 劇本</h3>
+            <div id="panelList">
+                <div class="panel-editor" data-idx="0">
+                    <div class="panel-num">第 1 格</div>
+                    <textarea class="desc" placeholder="描述這格的場景和動作..."></textarea>
+                    <textarea class="dialogue" placeholder="對話（選填）"></textarea>
+                </div>
+            </div>
+            <button class="add-panel" onclick="addPanel()">＋ 加一格</button>
+            <button class="gen-btn" id="genBtn" onclick="generate()">
+                <i class="fa-solid fa-wand-magic-sparkles"></i> 生成漫畫
+            </button>
+        </div>
+    </div>
+
+    <!-- Result -->
+    <div class="panel">
+        <h3><i class="fa-solid fa-book-open"></i> 漫畫成品</h3>
+        <div class="result" id="result">
+            <div class="empty">
+                <i class="fa-solid fa-book"></i>
+                <p>上傳角色 → 寫劇本 → 生成漫畫<br><span style="font-size:.85rem;">每格自動保持角色一致性</span></p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+let selectedStyle = '{{ styles[0].id }}';
+let charFile = null;
+let panelCount = 1;
+
+document.getElementById('charInput').addEventListener('change', e => {
+    if (e.target.files.length) {
+        charFile = e.target.files[0];
+        const fd = new FormData();
+        fd.append('image', charFile);
+        fd.append('name', '我的角色');
+        fetch('/api/character/upload', {method:'POST', body:fd})
+            .then(r=>r.json()).then(d=>{
+                if(d.success){
+                    document.getElementById('charImg').src = d.image;
+                    document.getElementById('charName').textContent = d.name;
+                    document.getElementById('charUpload').style.display='none';
+                    document.getElementById('charPreview').style.display='block';
+                    window._charId = d.id;
+                }
+            });
+    }
+});
+
+function selStyle(el) {
+    document.querySelectorAll('.style-opt').forEach(s=>s.classList.remove('sel'));
+    el.classList.add('sel');
+    selectedStyle = el.dataset.style;
+}
+
+function addPanel() {
+    panelCount++;
+    const div = document.createElement('div');
+    div.className = 'panel-editor';
+    div.dataset.idx = panelCount - 1;
+    div.innerHTML = `
+        <div class="panel-num">第 ${panelCount} 格</div>
+        <textarea class="desc" placeholder="描述這格的場景和動作..."></textarea>
+        <textarea class="dialogue" placeholder="對話（選填）"></textarea>
+    `;
+    document.getElementById('panelList').appendChild(div);
+}
+
+async function generate() {
+    const descs = [];
+    document.querySelectorAll('.panel-editor').forEach(el => {
+        descs.push({
+            description: el.querySelector('.desc').value,
+            dialogue: el.querySelector('.dialogue').value
+        });
+    });
+
+    if (!descs.some(d => d.description)) return alert('請至少輸入一格描述！');
+
+    const btn = document.getElementById('genBtn');
+    const res = document.getElementById('result');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa-solid fa-spinner spin"></i> 生成中...';
+    res.innerHTML = '<div class="empty"><i class="fa-solid fa-spinner spin" style="font-size:2.5rem;color:var(--accent);"></i><p>AI 正在繪製漫畫...</p></div>';
+
+    try {
+        const r = await fetch('/api/comic/create', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+                title: '我的漫畫',
+                style: selectedStyle,
+                character_id: window._charId || null,
+                panels: descs
+            })
+        });
+        const d = await r.json();
+
+        if (d.success) {
+            // Fetch comic details
+            const cr = await fetch('/api/comic/' + d.id);
+            const cd = await cr.json();
+            let html = '<div class="comic-grid">';
+            cd.panels.forEach(p => {
+                html += `<div class="comic-panel">
+                    ${p.url ? `<img src="${p.url}" alt="Panel ${p.num}">` : '<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.2);"><i class="fa-solid fa-spinner spin"></i></div>'}
+                    <div class="meta">第 ${p.num} 格 ${p.dialogue ? '· 💬 有對話' : ''}</div>
+                </div>`;
+            });
+            html += '</div>';
+            res.innerHTML = html;
+            document.querySelector('.usage strong').textContent = d.limit_info.used;
+        } else {
+            res.innerHTML = `<div class="empty"><p style="color:#ef4444;">${d.error}</p></div>`;
+        }
+    } catch(e) {
+        res.innerHTML = `<div class="empty"><p style="color:#ef4444;">錯誤：${e.message}</p></div>`;
+    }
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> 生成漫畫';
+}
+</script>
+</body>
+</html>
