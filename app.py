@@ -61,6 +61,9 @@ class ComicProject(db.Model):
     character_id = db.Column(db.Integer, db.ForeignKey("character.id"), nullable=True)
     panels_json = db.Column(db.Text, default="[]")  # JSON array of panel descriptions
     status = db.Column(db.String(50), default="draft")
+    progress = db.Column(db.Integer, default=0)  # 0-100 percentage
+    total_panels = db.Column(db.Integer, default=0)
+    completed_panels = db.Column(db.Integer, default=0)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 class Panel(db.Model):
@@ -187,7 +190,10 @@ def create_comic():
         user_id=u.id, title=title, style=style_id,
         character_id=character_id,
         panels_json=json.dumps(panels_desc, ensure_ascii=False),
-        status="generating"
+        status="generating",
+        total_panels=panels_needed,
+        completed_panels=0,
+        progress=0
     )
     db.session.add(proj); db.session.commit()
 
@@ -205,6 +211,8 @@ def create_comic():
         generate_all_panels(proj.id, style, char)
         u.panels_used += panels_needed
         proj.status = "done"
+        proj.progress = 100
+        proj.completed_panels = panels_needed
         db.session.commit()
         return jsonify({"success":True,"id":proj.id,"panels":panels_needed,"limit_info":u.limit_info()})
     except Exception as e:
@@ -213,13 +221,14 @@ def create_comic():
 
 
 def generate_all_panels(project_id, style, character):
-    """Generate all panels for a comic project"""
+    """Generate all panels for a comic project with IP-Adapter for character consistency"""
     import torch
     from PIL import Image, ImageDraw, ImageFont
     from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
 
     panels = Panel.query.filter_by(project_id=project_id).order_by(Panel.panel_num).all()
     proj = db.session.get(ComicProject, project_id)
+    total_panels = len(panels)
 
     # Load pipeline (lazy)
     if not hasattr(app, "_sd_pipe"):
@@ -237,43 +246,94 @@ def generate_all_panels(project_id, style, character):
 
     # Character reference (if provided)
     char_image = None
+    char_image_path = None
     if character and character.ref_image:
         char_path = os.path.join(app.config["CHAR_FOLDER"], character.ref_image)
         if os.path.exists(char_path):
             char_image = Image.open(char_path).convert("RGB").resize((512,512))
+            char_image_path = char_path
 
-    for panel in panels:
-        print(f"[ComicForge] Generating panel {panel.panel_num}...")
+    for i, panel in enumerate(panels):
+        print(f"[ComicForge] Generating panel {panel.panel_num} ({i+1}/{total_panels})...")
 
         prompt = f"{style['prompt']}, {panel.description}, single comic panel, professional illustration, high quality"
         negative = "blurry, low quality, deformed, ugly, extra limbs, bad anatomy, watermark, text, multiple panels"
 
-        # If we have a character reference, use img2img for consistency
-        if char_image:
-            # Use img2img with the character reference as base
-            from diffusers import StableDiffusionImg2ImgPipeline
-            if not hasattr(app, "_img2img_pipe"):
-                app._img2img_pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-                    "runwayml/stable-diffusion-v1-5",
-                    torch_dtype=torch.float16 if torch.backends.mps.is_available() else torch.float32,
-                    safety_checker=None,
-                ).to("mps" if torch.backends.mps.is_available() else "cpu")
-                app._img2img_pipe.enable_attention_slicing()
+        # If we have a character reference, use IP-Adapter for better consistency
+        if char_image_path:
+            try:
+                # Try to use IP-Adapter for character consistency
+                from ip_adapter import IPAdapter, IPAdapterXL
+                from ip_adapter.utils import register_cross_attention_hook
+                
+                # Load IP-Adapter model if not loaded
+                if not hasattr(app, "_ip_adapter"):
+                    print("[ComicForge] Loading IP-Adapter...")
+                    app._ip_adapter = IPAdapter(
+                        app._sd_pipe,
+                        "ip-adapter_sd15.bin",  # Download from https://huggingface.co/h94/IP-Adapter
+                        device="mps" if torch.backends.mps.is_available() else "cpu",
+                    )
+                
+                # Use IP-Adapter with character reference
+                result = app._ip_adapter.generate(
+                    prompt=prompt,
+                    negative_prompt=negative,
+                    pil_image=char_image,
+                    scale=0.8,  # Character influence strength
+                    width=512,
+                    height=512,
+                    num_inference_steps=25,
+                    guidance_scale=7.5,
+                )
+                img = result.images[0]
+                print(f"[ComicForge] Used IP-Adapter for panel {panel.panel_num}")
+            except ImportError:
+                print("[ComicForge] IP-Adapter not available, falling back to img2img")
+                # Fallback to img2img if IP-Adapter not installed
+                if not hasattr(app, "_img2img_pipe"):
+                    from diffusers import StableDiffusionImg2ImgPipeline
+                    app._img2img_pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+                        "runwayml/stable-diffusion-v1-5",
+                        torch_dtype=torch.float16 if torch.backends.mps.is_available() else torch.float32,
+                        safety_checker=None,
+                    ).to("mps" if torch.backends.mps.is_available() else "cpu")
+                    app._img2img_pipe.enable_attention_slicing()
 
-            result = app._img2img_pipe(
-                prompt=prompt, negative_prompt=negative,
-                image=char_image, strength=0.7,
-                guidance_scale=7.5, num_inference_steps=25,
-            )
+                result = app._img2img_pipe(
+                    prompt=prompt, negative_prompt=negative,
+                    image=char_image, strength=0.7,
+                    guidance_scale=7.5, num_inference_steps=25,
+                )
+                img = result.images[0]
+            except Exception as e:
+                print(f"[ComicForge] IP-Adapter error: {e}, falling back to img2img")
+                # Fallback to img2img on any error
+                if not hasattr(app, "_img2img_pipe"):
+                    from diffusers import StableDiffusionImg2ImgPipeline
+                    app._img2img_pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+                        "runwayml/stable-diffusion-v1-5",
+                        torch_dtype=torch.float16 if torch.backends.mps.is_available() else torch.float32,
+                        safety_checker=None,
+                    ).to("mps" if torch.backends.mps.is_available() else "cpu")
+                    app._img2img_pipe.enable_attention_slicing()
+
+                result = app._img2img_pipe(
+                    prompt=prompt, negative_prompt=negative,
+                    image=char_image, strength=0.7,
+                    guidance_scale=7.5, num_inference_steps=25,
+                )
+                img = result.images[0]
         else:
+            # No character reference, use regular generation
             result = pipe(
                 prompt=prompt, negative_prompt=negative,
                 width=512, height=512,
                 guidance_scale=7.5, num_inference_steps=25,
             )
+            img = result.images[0]
 
         # Add dialogue bubble if needed
-        img = result.images[0]
         if panel.dialogue:
             img = add_dialogue_bubble(img, panel.dialogue)
 
@@ -284,49 +344,110 @@ def generate_all_panels(project_id, style, character):
 
         panel.output_file = filename
         panel.status = "done"
+        
+        # Update progress
+        proj.completed_panels = i + 1
+        proj.progress = int((i + 1) / total_panels * 100)
         db.session.commit()
+        
+        print(f"[ComicForge] Panel {panel.panel_num} completed. Progress: {proj.progress}%")
 
 
-def add_dialogue_bubble(img, text):
-    """Add a speech bubble to a comic panel"""
-    from PIL import ImageDraw, ImageFont
+def add_dialogue_bubble(img, text, position="top-right"):
+    """Add a professional speech bubble to a comic panel"""
+    from PIL import ImageDraw, ImageFont, ImageFilter
+    import textwrap
+    
     draw = ImageDraw.Draw(img)
     w, h = img.size
-
-    # Speech bubble position (top-right)
-    bubble_x, bubble_y = w - 220, 20
-    bubble_w, bubble_h = 200, 80
-
-    # Draw bubble
-    draw.rounded_rectangle(
-        [bubble_x, bubble_y, bubble_x + bubble_w, bubble_y + bubble_h],
-        radius=15, fill="white", outline="black", width=2
-    )
-
-    # Draw text
+    
+    # Calculate bubble dimensions based on text length
     try:
-        font = ImageFont.truetype("/System/Library/Fonts/PingFang.ttc", 16)
+        font = ImageFont.truetype("/System/Library/Fonts/PingFang.ttc", 14)
     except:
         font = ImageFont.load_default()
-
-    # Wrap text
-    lines = []
-    words = text
-    line = ""
-    for char in words:
-        line += char
-        if len(line) > 12:
-            lines.append(line)
-            line = ""
-    if line:
-        lines.append(line)
-
-    for i, line in enumerate(lines[:3]):
-        draw.text((bubble_x + 12, bubble_y + 12 + i * 22), line, fill="black", font=font)
-
-    # Tail
-    draw.polygon([(bubble_x + 30, bubble_y + bubble_h), (bubble_x + 50, bubble_y + bubble_h + 20), (bubble_x + 60, bubble_y + bubble_h)], fill="white", outline="black")
-
+    
+    # Wrap text to fit in bubble
+    wrapper = textwrap.TextWrapper(width=15)
+    lines = wrapper.wrap(text)
+    lines = lines[:3]  # Limit to 3 lines
+    
+    # Calculate text dimensions
+    text_width = 0
+    text_height = 0
+    for line in lines:
+        bbox = font.getbbox(line)
+        line_width = bbox[2] - bbox[0]
+        line_height = bbox[3] - bbox[1]
+        text_width = max(text_width, line_width)
+        text_height += line_height + 4
+    
+    # Add padding
+    padding = 12
+    bubble_width = text_width + padding * 2
+    bubble_height = text_height + padding * 2
+    
+    # Position bubble
+    if position == "top-right":
+        bubble_x = w - bubble_width - 20
+        bubble_y = 20
+    elif position == "top-left":
+        bubble_x = 20
+        bubble_y = 20
+    elif position == "bottom-right":
+        bubble_x = w - bubble_width - 20
+        bubble_y = h - bubble_height - 20
+    elif position == "bottom-left":
+        bubble_x = 20
+        bubble_y = h - bubble_height - 20
+    else:  # center
+        bubble_x = (w - bubble_width) // 2
+        bubble_y = 20
+    
+    # Draw shadow
+    shadow_offset = 3
+    draw.rounded_rectangle(
+        [bubble_x + shadow_offset, bubble_y + shadow_offset, 
+         bubble_x + bubble_width + shadow_offset, bubble_y + bubble_height + shadow_offset],
+        radius=12, fill=(0, 0, 0, 100)
+    )
+    
+    # Draw bubble
+    draw.rounded_rectangle(
+        [bubble_x, bubble_y, bubble_x + bubble_width, bubble_y + bubble_height],
+        radius=12, fill="white", outline="black", width=2
+    )
+    
+    # Draw text
+    y_offset = bubble_y + padding
+    for line in lines:
+        draw.text((bubble_x + padding, y_offset), line, fill="black", font=font)
+        bbox = font.getbbox(line)
+        y_offset += (bbox[3] - bbox[1]) + 4
+    
+    # Draw tail (pointing to bottom-right for top-right bubble)
+    if position == "top-right":
+        tail_points = [
+            (bubble_x + bubble_width - 30, bubble_y + bubble_height),
+            (bubble_x + bubble_width - 10, bubble_y + bubble_height + 15),
+            (bubble_x + bubble_width - 40, bubble_y + bubble_height)
+        ]
+    elif position == "top-left":
+        tail_points = [
+            (bubble_x + 30, bubble_y + bubble_height),
+            (bubble_x + 10, bubble_y + bubble_height + 15),
+            (bubble_x + 40, bubble_y + bubble_height)
+        ]
+    else:
+        # Default tail for other positions
+        tail_points = [
+            (bubble_x + 30, bubble_y + bubble_height),
+            (bubble_x + 50, bubble_y + bubble_height + 15),
+            (bubble_x + 60, bubble_y + bubble_height)
+        ]
+    
+    draw.polygon(tail_points, fill="white", outline="black")
+    
     return img
 
 
@@ -341,6 +462,9 @@ def get_comic(proj_id):
     return jsonify({
         "id": proj.id, "title": proj.title, "style": proj.style,
         "status": proj.status,
+        "progress": proj.progress,
+        "total_panels": proj.total_panels,
+        "completed_panels": proj.completed_panels,
         "panels": [{
             "num": p.panel_num, "description": p.description,
             "dialogue": p.dialogue, "status": p.status,
@@ -365,7 +489,17 @@ def me():
 def list_projects():
     u = current_user()
     projs = ComicProject.query.filter_by(user_id=u.id).order_by(ComicProject.created_at.desc()).all()
-    return jsonify([{"id":p.id,"title":p.title,"style":p.style,"status":p.status,"panels":len(json.loads(p.panels_json)),"created":p.created_at.isoformat()} for p in projs])
+    return jsonify([{
+        "id": p.id,
+        "title": p.title,
+        "style": p.style,
+        "status": p.status,
+        "progress": p.progress,
+        "total_panels": p.total_panels,
+        "completed_panels": p.completed_panels,
+        "panels": len(json.loads(p.panels_json)),
+        "created": p.created_at.isoformat()
+    } for p in projs])
 
 with app.app_context():
     db.create_all()
