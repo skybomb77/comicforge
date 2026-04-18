@@ -1,26 +1,26 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign In — KC Headshots</title>
+    <title>登入 — ComicForge 漫鍛</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0f; color: #eee; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-        .card { background: #12121a; border: 1px solid #1e1e2e; border-radius: 20px; padding: 40px; width: 400px; max-width: 90vw; }
-        .logo { text-align: center; font-size: 1.4rem; font-weight: 700; margin-bottom: 32px; }
-        .logo i { color: #7c5cff; margin-right: 8px; }
-        h2 { text-align: center; margin-bottom: 24px; font-size: 1.3rem; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans TC', sans-serif; background: #0a0a0f; color: #eee; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+        .card { background: #12121a; border: 1px solid #1e1e2e; border-radius: 20px; padding: 40px; width: 420px; max-width: 90vw; }
+        .logo { text-align: center; font-size: 1.4rem; font-weight: 700; margin-bottom: 8px; }
+        .logo span { color: #f59e0b; }
+        .subtitle { text-align: center; color: #888; font-size: .85rem; margin-bottom: 28px; }
         .tabs { display: flex; gap: 0; margin-bottom: 24px; border: 1px solid #1e1e2e; border-radius: 10px; overflow: hidden; }
         .tab { flex: 1; padding: 10px; text-align: center; cursor: pointer; font-size: 0.9rem; color: #888; transition: all 0.2s; }
-        .tab.active { background: rgba(124,92,255,0.15); color: #7c5cff; }
+        .tab.active { background: rgba(245,158,11,0.15); color: #f59e0b; }
         .form-group { margin-bottom: 16px; }
         .form-group label { display: block; font-size: 0.85rem; color: #888; margin-bottom: 6px; }
         .form-group input { width: 100%; padding: 12px 16px; background: rgba(0,0,0,0.3); border: 1px solid #1e1e2e; border-radius: 10px; color: #fff; font-size: 0.95rem; outline: none; transition: border-color 0.2s; }
-        .form-group input:focus { border-color: #7c5cff; }
-        .btn { width: 100%; padding: 14px; background: #7c5cff; color: #fff; border: none; border-radius: 10px; font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 8px; transition: all 0.2s; }
-        .btn:hover { background: #6b4de6; }
+        .form-group input:focus { border-color: #f59e0b; }
+        .btn { width: 100%; padding: 14px; background: #f59e0b; color: #0a0a0f; border: none; border-radius: 10px; font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 8px; transition: all 0.2s; }
+        .btn:hover { background: #e08e00; }
         .error { color: #ef4444; font-size: 0.85rem; text-align: center; margin-top: 12px; display: none; }
         .back { text-align: center; margin-top: 20px; }
         .back a { color: #888; font-size: 0.85rem; }
@@ -28,11 +28,12 @@
 </head>
 <body>
     <div class="card">
-        <div class="logo"><i class="fa-solid fa-camera-retro"></i> KC Headshots</div>
+        <div class="logo">📖 ComicForge <span>漫鍛</span></div>
+        <div class="subtitle">AI 漫畫生成器</div>
 
         <div class="tabs">
-            <div class="tab active" onclick="showTab('login')">Sign In</div>
-            <div class="tab" onclick="showTab('register')">Create Account</div>
+            <div class="tab active" onclick="showTab('login', this)">登入</div>
+            <div class="tab" onclick="showTab('register', this)">註冊</div>
         </div>
 
         <!-- Login -->
@@ -42,72 +43,103 @@
                 <input type="email" id="loginEmail" required placeholder="you@example.com">
             </div>
             <div class="form-group">
-                <label>Password</label>
-                <input type="password" id="loginPassword" required placeholder="Your password">
+                <label>密碼</label>
+                <input type="password" id="loginPassword" required placeholder="輸入密碼">
             </div>
-            <button type="submit" class="btn">Sign In</button>
+            <button type="submit" class="btn">登入</button>
             <div class="error" id="loginError"></div>
         </form>
 
         <!-- Register -->
         <form id="registerForm" style="display:none;" onsubmit="return handleRegister(event)">
             <div class="form-group">
-                <label>Name</label>
-                <input type="text" id="regName" required placeholder="Your name">
+                <label>名稱</label>
+                <input type="text" id="regName" required placeholder="你的名字">
             </div>
             <div class="form-group">
                 <label>Email</label>
                 <input type="email" id="regEmail" required placeholder="you@example.com">
             </div>
             <div class="form-group">
-                <label>Password</label>
-                <input type="password" id="regPassword" required minlength="6" placeholder="Min 6 characters">
+                <label>密碼</label>
+                <input type="password" id="regPassword" required minlength="6" placeholder="至少 6 個字">
             </div>
-            <button type="submit" class="btn">Create Account</button>
+            <button type="submit" class="btn">建立帳號</button>
             <div class="error" id="regError"></div>
         </form>
 
-        <div class="back"><a href="/">← Back to home</a></div>
+        <div class="back"><a href="/">← 返回首頁</a></div>
     </div>
 
     <script>
-        function showTab(tab) {
+        function showTab(tab, el) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            el.classList.add('active');
             document.getElementById('loginForm').style.display = tab === 'login' ? 'block' : 'none';
             document.getElementById('registerForm').style.display = tab === 'register' ? 'block' : 'none';
-            event.target.classList.add('active');
+        }
+
+        function storeAuth(data) {
+            localStorage.setItem('cf_token', data.token);
+            localStorage.setItem('cf_name', data.name || '');
+            localStorage.setItem('cf_email', data.email || '');
+            localStorage.setItem('cf_limit', JSON.stringify(data.limit_info));
         }
 
         async function handleLogin(e) {
             e.preventDefault();
-            const res = await fetch('/api/login', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    email: document.getElementById('loginEmail').value,
-                    password: document.getElementById('loginPassword').value,
-                })
-            });
-            const data = await res.json();
-            if (data.success) window.location.href = data.redirect;
-            else { document.getElementById('loginError').style.display = 'block'; document.getElementById('loginError').textContent = data.error; }
+            const errEl = document.getElementById('loginError');
+            errEl.style.display = 'none';
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        email: document.getElementById('loginEmail').value,
+                        password: document.getElementById('loginPassword').value,
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    storeAuth(data);
+                    window.location.href = '/app';
+                } else {
+                    errEl.style.display = 'block';
+                    errEl.textContent = data.error;
+                }
+            } catch (err) {
+                errEl.style.display = 'block';
+                errEl.textContent = '連線錯誤，請重試';
+            }
             return false;
         }
 
         async function handleRegister(e) {
             e.preventDefault();
-            const res = await fetch('/api/register', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: document.getElementById('regName').value,
-                    email: document.getElementById('regEmail').value,
-                    password: document.getElementById('regPassword').value,
-                })
-            });
-            const data = await res.json();
-            if (data.success) window.location.href = data.redirect;
-            else { document.getElementById('regError').style.display = 'block'; document.getElementById('regError').textContent = data.error; }
+            const errEl = document.getElementById('regError');
+            errEl.style.display = 'none';
+            try {
+                const res = await fetch('/api/register', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        name: document.getElementById('regName').value,
+                        email: document.getElementById('regEmail').value,
+                        password: document.getElementById('regPassword').value,
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    storeAuth(data);
+                    window.location.href = '/app';
+                } else {
+                    errEl.style.display = 'block';
+                    errEl.textContent = data.error;
+                }
+            } catch (err) {
+                errEl.style.display = 'block';
+                errEl.textContent = '連線錯誤，請重試';
+            }
             return false;
         }
     </script>

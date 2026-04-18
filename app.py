@@ -1,12 +1,13 @@
 """
 ComicForge 漫鍛 — AI Comic Generator
 Upload character ref + input story → generate consistent comic panels
+API-only backend (frontend on GitHub Pages)
 """
 import os, uuid, hashlib, base64, io, json
 from datetime import datetime
 from functools import wraps
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session, send_file, abort
+from flask import Flask, request, jsonify, send_file, abort, render_template
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 
@@ -20,7 +21,7 @@ app.config["CHAR_FOLDER"] = os.path.join(os.path.dirname(__file__), "characters"
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 os.makedirs(app.config["CHAR_FOLDER"], exist_ok=True)
 
-CORS(app)
+CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=True)
 db = SQLAlchemy(app)
 
 # ========== Art Styles ==========
@@ -39,6 +40,7 @@ class User(db.Model):
     email = db.Column(db.String(255), unique=True, nullable=False)
     name = db.Column(db.String(255), default="")
     password_hash = db.Column(db.String(255), nullable=False)
+    api_token = db.Column(db.String(64), unique=True, default=None)
     plan = db.Column(db.String(50), default="free")
     panels_used = db.Column(db.Integer, default=0)
     panels_limit = db.Column(db.Integer, default=20)  # Free: 20 panels
@@ -82,38 +84,29 @@ def hash_pw(pw): return hashlib.sha256(pw.encode()).hexdigest()
 def login_required(f):
     @wraps(f)
     def d(*a, **k):
-        if "user_id" not in session: return redirect(url_for("login_page"))
+        token = request.headers.get("Authorization", "").replace("Bearer ", "")
+        if not token:
+            return jsonify({"error":"需要登入"}), 401
+        user = User.query.filter_by(api_token=token).first()
+        if not user:
+            return jsonify({"error":"Token 無效"}), 401
+        request._user = user
         return f(*a, **k)
     return d
 
 def current_user():
-    return db.session.get(User, session["user_id"]) if "user_id" in session else None
+    return getattr(request, "_user", None)
 
 # ========== Routes ==========
 @app.route("/")
 def index():
-    return render_template("index.html", styles=ART_STYLES)
-
-@app.route("/login")
-def login_page():
-    return render_template("login.html")
-
-@app.route("/app")
-@login_required
-def app_page():
-    u = current_user()
-    chars = Character.query.filter_by(user_id=u.id).all()
-    return render_template("app.html", user=u, styles=ART_STYLES, characters=chars)
-
-@app.route("/dashboard")
-@login_required
-def dashboard():
-    u = current_user()
-    projects = ComicProject.query.filter_by(user_id=u.id).order_by(ComicProject.created_at.desc()).limit(12).all()
-    return render_template("dashboard.html", user=u, projects=projects)
+    return jsonify({"service":"comicforge","version":"1.0","status":"running"})
 
 @app.route("/health")
 def health(): return jsonify({"ok":True,"service":"comicforge"})
+
+@app.route("/api/styles")
+def get_styles(): return jsonify(ART_STYLES)
 
 # ========== Auth API ==========
 @app.route("/api/register", methods=["POST"])
@@ -123,21 +116,28 @@ def register():
     pw = d.get("password","")
     if not email or not pw: return jsonify({"error":"需要 email 和密碼"}), 400
     if User.query.filter_by(email=email).first(): return jsonify({"error":"此 email 已註冊"}), 400
-    u = User(email=email, name=d.get("name",""), password_hash=hash_pw(pw))
+    token = uuid.uuid4().hex
+    u = User(email=email, name=d.get("name",""), password_hash=hash_pw(pw), api_token=token)
     db.session.add(u); db.session.commit()
-    session["user_id"] = u.id
-    return jsonify({"success":True,"redirect":"/app"})
+    return jsonify({"success":True,"token":token,"name":u.name,"email":u.email,"limit_info":u.limit_info()})
 
 @app.route("/api/login", methods=["POST"])
 def login():
     d = request.get_json()
     u = User.query.filter_by(email=d.get("email","").strip().lower()).first()
     if not u or u.password_hash != hash_pw(d.get("password","")): return jsonify({"error":"帳號或密碼錯誤"}), 401
-    session["user_id"] = u.id
-    return jsonify({"success":True,"redirect":"/app"})
+    # Regenerate token on each login
+    u.api_token = uuid.uuid4().hex
+    db.session.commit()
+    return jsonify({"success":True,"token":u.api_token,"name":u.name,"email":u.email,"limit_info":u.limit_info()})
 
-@app.route("/api/logout")
-def logout(): session.clear(); return redirect(url_for("index"))
+@app.route("/api/logout", methods=["POST"])
+@login_required
+def logout():
+    u = current_user()
+    u.api_token = None
+    db.session.commit()
+    return jsonify({"success":True})
 
 # ========== Character Management ==========
 @app.route("/api/character/upload", methods=["POST"])
@@ -221,117 +221,97 @@ def create_comic():
 
 
 def generate_all_panels(project_id, style, character):
-    """Generate all panels for a comic project with IP-Adapter for character consistency"""
-    import torch
+    """Generate all panels via online backend (localhost:8788) with IP-Adapter local fallback"""
+    import requests as http_requests
     from PIL import Image, ImageDraw, ImageFont
-    from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
+    import base64, io
+
+    ONLINE_API = os.environ.get("COMICFORGE_API_URL", "http://localhost:8788/api/generate-img")
 
     panels = Panel.query.filter_by(project_id=project_id).order_by(Panel.panel_num).all()
     proj = db.session.get(ComicProject, project_id)
     total_panels = len(panels)
 
-    # Load pipeline (lazy)
-    if not hasattr(app, "_sd_pipe"):
-        print("[ComicForge] Loading SD pipeline...")
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
-        app._sd_pipe = StableDiffusionPipeline.from_pretrained(
-            "runwayml/stable-diffusion-v1-5",
-            torch_dtype=torch.float16 if device == "mps" else torch.float32,
-            safety_checker=None,
-        ).to(device)
-        app._sd_pipe.enable_attention_slicing()
-        print(f"[ComicForge] SD loaded on {device}")
-
-    pipe = app._sd_pipe
-
     # Character reference (if provided)
     char_image = None
-    char_image_path = None
+    char_desc = ""
     if character and character.ref_image:
         char_path = os.path.join(app.config["CHAR_FOLDER"], character.ref_image)
         if os.path.exists(char_path):
-            char_image = Image.open(char_path).convert("RGB").resize((512,512))
-            char_image_path = char_path
+            char_image = Image.open(char_path).convert("RGB").resize((512, 512))
+            char_desc = f", consistent character design based on reference, same character appearance throughout"
 
+    def _gen_online(prompt, negative):
+        """Call online backend API"""
+        resp = http_requests.post(ONLINE_API, json={
+            "prompt": prompt,
+            "negative_prompt": negative,
+            "width": 512, "height": 512,
+            "steps": 25, "guidance_scale": 7.5,
+        }, timeout=120)
+        resp.raise_for_status()
+        data = resp.json()
+        if not data.get("success"):
+            raise RuntimeError(data.get("error", "Unknown API error"))
+        img_b64 = data["url"].split(",", 1)[1]
+        return Image.open(io.BytesIO(base64.b64decode(img_b64)))
+
+    def _gen_local_ip_adapter(prompt, negative):
+        """Local IP-Adapter fallback for character consistency"""
+        import torch
+        from diffusers import StableDiffusionPipeline
+        if not hasattr(app, "_sd_pipe"):
+            print("[ComicForge] Loading local SD pipeline (fallback)...")
+            device = "mps" if torch.backends.mps.is_available() else "cpu"
+            app._sd_pipe = StableDiffusionPipeline.from_pretrained(
+                "runwayml/stable-diffusion-v1-5",
+                torch_dtype=torch.float32,  # MPS requires float32, NOT float16 (causes NaN/blank images)
+                safety_checker=None,
+            ).to(device)
+            app._sd_pipe.enable_attention_slicing()
+        from ip_adapter import IPAdapter
+        if not hasattr(app, "_ip_adapter"):
+            print("[ComicForge] Loading IP-Adapter (fallback)...")
+            app._ip_adapter = IPAdapter(
+                app._sd_pipe,
+                os.path.join(os.path.dirname(__file__), "models", "ip-adapter_sd15.bin"),
+                device="mps" if torch.backends.mps.is_available() else "cpu",
+            )
+        result = app._ip_adapter.generate(
+            prompt=prompt, negative_prompt=negative,
+            pil_image=char_image, scale=0.8,
+            width=512, height=512, num_inference_steps=25, guidance_scale=7.5,
+        )
+        return result.images[0]
+
+    online_ok = True
     for i, panel in enumerate(panels):
-        print(f"[ComicForge] Generating panel {panel.panel_num} ({i+1}/{total_panels})...")
+        print(f"[ComicForge] Panel {panel.panel_num} ({i+1}/{total_panels})...")
 
-        prompt = f"{style['prompt']}, {panel.description}, single comic panel, professional illustration, high quality"
+        prompt = f"{style['prompt']}, {panel.description}, single comic panel, professional illustration, high quality{char_desc}"
         negative = "blurry, low quality, deformed, ugly, extra limbs, bad anatomy, watermark, text, multiple panels"
 
-        # If we have a character reference, use IP-Adapter for better consistency
-        if char_image_path:
+        img = None
+        # Try online first
+        if online_ok:
             try:
-                # Try to use IP-Adapter for character consistency
-                from ip_adapter import IPAdapter, IPAdapterXL
-                from ip_adapter.utils import register_cross_attention_hook
-                
-                # Load IP-Adapter model if not loaded
-                if not hasattr(app, "_ip_adapter"):
-                    print("[ComicForge] Loading IP-Adapter...")
-                    app._ip_adapter = IPAdapter(
-                        app._sd_pipe,
-                        "ip-adapter_sd15.bin",  # Download from https://huggingface.co/h94/IP-Adapter
-                        device="mps" if torch.backends.mps.is_available() else "cpu",
-                    )
-                
-                # Use IP-Adapter with character reference
-                result = app._ip_adapter.generate(
-                    prompt=prompt,
-                    negative_prompt=negative,
-                    pil_image=char_image,
-                    scale=0.8,  # Character influence strength
-                    width=512,
-                    height=512,
-                    num_inference_steps=25,
-                    guidance_scale=7.5,
-                )
-                img = result.images[0]
-                print(f"[ComicForge] Used IP-Adapter for panel {panel.panel_num}")
-            except ImportError:
-                print("[ComicForge] IP-Adapter not available, falling back to img2img")
-                # Fallback to img2img if IP-Adapter not installed
-                if not hasattr(app, "_img2img_pipe"):
-                    from diffusers import StableDiffusionImg2ImgPipeline
-                    app._img2img_pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-                        "runwayml/stable-diffusion-v1-5",
-                        torch_dtype=torch.float16 if torch.backends.mps.is_available() else torch.float32,
-                        safety_checker=None,
-                    ).to("mps" if torch.backends.mps.is_available() else "cpu")
-                    app._img2img_pipe.enable_attention_slicing()
-
-                result = app._img2img_pipe(
-                    prompt=prompt, negative_prompt=negative,
-                    image=char_image, strength=0.7,
-                    guidance_scale=7.5, num_inference_steps=25,
-                )
-                img = result.images[0]
+                img = _gen_online(prompt, negative)
+                print(f"[ComicForge] Panel {panel.panel_num} generated online ✓")
             except Exception as e:
-                print(f"[ComicForge] IP-Adapter error: {e}, falling back to img2img")
-                # Fallback to img2img on any error
-                if not hasattr(app, "_img2img_pipe"):
-                    from diffusers import StableDiffusionImg2ImgPipeline
-                    app._img2img_pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-                        "runwayml/stable-diffusion-v1-5",
-                        torch_dtype=torch.float16 if torch.backends.mps.is_available() else torch.float32,
-                        safety_checker=None,
-                    ).to("mps" if torch.backends.mps.is_available() else "cpu")
-                    app._img2img_pipe.enable_attention_slicing()
+                print(f"[ComicForge] Online failed: {e}, switching to local fallback")
+                online_ok = False
 
-                result = app._img2img_pipe(
-                    prompt=prompt, negative_prompt=negative,
-                    image=char_image, strength=0.7,
-                    guidance_scale=7.5, num_inference_steps=25,
-                )
-                img = result.images[0]
-        else:
-            # No character reference, use regular generation
-            result = pipe(
-                prompt=prompt, negative_prompt=negative,
-                width=512, height=512,
-                guidance_scale=7.5, num_inference_steps=25,
-            )
-            img = result.images[0]
+        # Fallback: local IP-Adapter (only if char ref exists)
+        if img is None:
+            if char_image:
+                try:
+                    img = _gen_local_ip_adapter(prompt, negative)
+                    print(f"[ComicForge] Panel {panel.panel_num} generated locally (IP-Adapter) ✓")
+                except Exception as e:
+                    print(f"[ComicForge] Local IP-Adapter failed: {e}")
+                    raise RuntimeError(f"Both online and local generation failed for panel {panel.panel_num}")
+            else:
+                raise RuntimeError(f"Online backend unavailable and no local pipeline for panel {panel.panel_num}")
 
         # Add dialogue bubble if needed
         if panel.dialogue:
@@ -344,8 +324,6 @@ def generate_all_panels(project_id, style, character):
 
         panel.output_file = filename
         panel.status = "done"
-        
-        # Update progress
         proj.completed_panels = i + 1
         proj.progress = int((i + 1) / total_panels * 100)
         db.session.commit()
@@ -484,22 +462,218 @@ def me():
     u = current_user()
     return jsonify({"email":u.email,"name":u.name,"plan":u.plan,"limit_info":u.limit_info()})
 
-@app.route("/api/projects")
+# ========== AI Script Generator =========
+@app.route("/api/script/generate", methods=["POST"])
 @login_required
-def list_projects():
+def generate_script():
+    """AI generates panel descriptions from a story premise"""
+    d = request.get_json()
+    premise = d.get("premise", "").strip()
+    num_panels = min(int(d.get("panels", 4)), 12)
+    style_id = d.get("style", "manga_color")
+
+    if not premise:
+        return jsonify({"error": "請輸入故事前提"}), 400
+
+    style = next((s for s in ART_STYLES if s["id"] == style_id), ART_STYLES[0])
+    panels = _generate_panel_descriptions(premise, num_panels, style)
+    return jsonify({"success": True, "panels": panels, "style": style_id})
+
+
+def _generate_panel_descriptions(premise, num_panels, style):
+    """Generate comic panel descriptions — try Hermes API, fallback to templates"""
+    HERMES_URL = os.environ.get("HERMES_API_URL", "http://localhost:8642/v1/chat/completions")
+    HERMES_KEY = os.environ.get("HERMES_API_KEY", "wpZIYk6cmsU3KVn0")
+
+    try:
+        import requests as http_requests
+        resp = http_requests.post(HERMES_URL,
+            headers={"Authorization": f"Bearer {HERMES_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": "hermes",
+                "messages": [
+                    {"role": "system", "content": f"""你是漫畫劇本助手。根據故事前提，生成 {num_panels} 格漫畫的分鏡描述。
+每格需要：
+- description: 畫面描述（英文，詳細的視覺描述，包含角色動作、表情、場景、構圖）
+- dialogue: 對話（中文，選填，簡短自然）
+
+風格：{style['name']}
+
+回傳 JSON 陣列格式，例如：
+[{{"description": "A young hero standing on a rooftop at sunset...", "dialogue": "我一定要守護這個城市！"}}]
+
+只回傳 JSON，不要其他文字。"""},
+                    {"role": "user", "content": f"故事前提：{premise}"}
+                ],
+                "temperature": 0.7,
+                "max_tokens": 2000
+            }, timeout=30)
+
+        if resp.status_code == 200:
+            content = resp.json()["choices"][0]["message"]["content"]
+            panels = json.loads(content)
+            if isinstance(panels, list) and len(panels) > 0:
+                return panels[:num_panels]
+    except Exception as e:
+        print(f"[ComicForge] AI script generation failed: {e}, using fallback")
+
+    return _fallback_script(premise, num_panels)
+
+
+def _fallback_script(premise, num_panels):
+    """Fallback script generation without AI"""
+    templates = [
+        {"description": f"Opening wide shot of: {premise}. Dramatic lighting, establishing the scene.", "dialogue": ""},
+        {"description": f"Close-up of main character, determined expression, related to: {premise}.", "dialogue": ""},
+        {"description": f"Dynamic action scene from: {premise}. Motion blur, energetic composition.", "dialogue": ""},
+        {"description": f"Climactic moment of: {premise}. Dramatic angle, strong contrast.", "dialogue": ""},
+        {"description": f"Emotional reaction shot from: {premise}. Soft lighting, intimate framing.", "dialogue": ""},
+        {"description": f"Environment detail from: {premise}. Rich background, atmosphere building.", "dialogue": ""},
+        {"description": f"Tense confrontation in: {premise}. Split panel feeling, opposing forces.", "dialogue": ""},
+        {"description": f"Resolution scene: {premise}. Warm tones, satisfying conclusion.", "dialogue": ""},
+    ]
+    return templates[:num_panels]
+
+
+# ========== Comic Export =========
+@app.route("/api/comic/<int:proj_id>/export", methods=["POST"])
+@login_required
+def export_comic(proj_id):
+    """Export comic as a combined strip image"""
+    from PIL import Image as PILImage
+
     u = current_user()
-    projs = ComicProject.query.filter_by(user_id=u.id).order_by(ComicProject.created_at.desc()).all()
-    return jsonify([{
-        "id": p.id,
-        "title": p.title,
-        "style": p.style,
-        "status": p.status,
-        "progress": p.progress,
-        "total_panels": p.total_panels,
-        "completed_panels": p.completed_panels,
-        "panels": len(json.loads(p.panels_json)),
-        "created": p.created_at.isoformat()
-    } for p in projs])
+    proj = db.session.get(ComicProject, proj_id)
+    if not proj or proj.user_id != u.id:
+        return jsonify({"error": "找不到"}), 404
+
+    panels = Panel.query.filter_by(project_id=proj_id).order_by(Panel.panel_num).all()
+    if not panels or not all(p.output_file for p in panels):
+        return jsonify({"error": "漫畫尚未完成生成"}), 400
+
+    body = request.get_json(silent=True) or {}
+    layout = body.get("layout", "vertical")
+
+    images = []
+    for p in panels:
+        path = os.path.join(app.config["UPLOAD_FOLDER"], p.output_file)
+        if os.path.exists(path):
+            images.append(PILImage.open(path))
+
+    if not images:
+        return jsonify({"error": "找不到漫畫圖片"}), 404
+
+    gap = 8
+    if layout == "vertical":
+        w = max(img.width for img in images)
+        total_h = sum(img.height for img in images) + gap * (len(images) - 1)
+        strip = PILImage.new("RGB", (w, total_h), (10, 10, 15))
+        y = 0
+        for img in images:
+            x = (w - img.width) // 2
+            strip.paste(img, (x, y))
+            y += img.height + gap
+    elif layout == "2x2":
+        cols = 2
+        rows = (len(images) + cols - 1) // cols
+        cell_w = max(img.width for img in images)
+        cell_h = max(img.height for img in images)
+        strip = PILImage.new("RGB", (cols * cell_w + gap * (cols - 1), rows * cell_h + gap * (rows - 1)), (10, 10, 15))
+        for i, img in enumerate(images):
+            row, col = i // cols, i % cols
+            strip.paste(img, (col * (cell_w + gap), row * (cell_h + gap)))
+    else:
+        total_w = sum(img.width for img in images) + gap * (len(images) - 1)
+        h = max(img.height for img in images)
+        strip = PILImage.new("RGB", (total_w, h), (10, 10, 15))
+        x = 0
+        for img in images:
+            y = (h - img.height) // 2
+            strip.paste(img, (x, y))
+            x += img.width + gap
+
+    export_name = f"comic_strip_{proj_id}_{layout}.png"
+    strip.save(os.path.join(app.config["UPLOAD_FOLDER"], export_name), quality=95)
+
+    return jsonify({"success": True, "url": f"/api/image/{export_name}", "width": strip.width, "height": strip.height})
+
+
+# ========== Async Generation =========
+import threading
+_gen_lock = threading.Lock()
+
+@app.route("/api/comic/create-async", methods=["POST"])
+@login_required
+def create_comic_async():
+    """Create comic with background generation (non-blocking)"""
+    u = current_user()
+    d = request.get_json()
+
+    title = d.get("title", "我的漫畫")
+    style_id = d.get("style", "manga_color")
+    character_id = d.get("character_id")
+    panels_desc = d.get("panels", [])
+
+    if not panels_desc:
+        return jsonify({"error": "請輸入至少一格漫畫描述"}), 400
+    panels_needed = len(panels_desc)
+    if u.panels_used + panels_needed > u.panels_limit:
+        return jsonify({"error": f"額度不足！需要 {panels_needed} 格，剩餘 {u.panels_limit - u.panels_used} 格", "limit_info": u.limit_info()}), 402
+
+    proj = ComicProject(
+        user_id=u.id, title=title, style=style_id, character_id=character_id,
+        panels_json=json.dumps(panels_desc, ensure_ascii=False),
+        status="generating", total_panels=panels_needed, completed_panels=0, progress=0
+    )
+    db.session.add(proj)
+    db.session.commit()
+
+    for i, pd in enumerate(panels_desc):
+        p = Panel(project_id=proj.id, panel_num=i + 1,
+                  description=pd.get("description", ""), dialogue=pd.get("dialogue", ""))
+        db.session.add(p)
+    db.session.commit()
+
+    u.panels_used += panels_needed
+    db.session.commit()
+
+    proj_id = proj.id
+    def _bg_generate():
+        with _gen_lock:
+            with app.app_context():
+                style = next((s for s in ART_STYLES if s["id"] == style_id), ART_STYLES[0])
+                char = db.session.get(Character, character_id) if character_id else None
+                try:
+                    generate_all_panels(proj_id, style, char)
+                    p = db.session.get(ComicProject, proj_id)
+                    p.status = "done"
+                    p.progress = 100
+                    p.completed_panels = panels_needed
+                    db.session.commit()
+                except Exception as e:
+                    print(f"[ComicForge] Async generation error: {e}")
+                    p = db.session.get(ComicProject, proj_id)
+                    p.status = "error"
+                    db.session.commit()
+
+    threading.Thread(target=_bg_generate, daemon=True).start()
+    return jsonify({"success": True, "id": proj_id, "status": "generating", "panels": panels_needed})
+
+# ========== Projects =========
+
+
+# ========== Page Routes =========
+@app.route("/login")
+def login_page():
+    return render_template("login.html")
+
+@app.route("/app")
+def app_page():
+    return render_template("app.html")
+
+@app.route("/dashboard")
+def dashboard_page():
+    return render_template("dashboard.html")
 
 with app.app_context():
     db.create_all()

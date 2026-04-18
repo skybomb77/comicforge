@@ -27,12 +27,14 @@
         .hero p { color:var(--muted); font-size:1.15rem; max-width:600px; margin:0 auto 32px; }
 
         .proof { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; max-width:700px; margin:0 auto 40px; }
-        .proof div { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px 12px; text-align:center; }
+        .proof a { display:block; background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px 12px; text-align:center; color:inherit; text-decoration:none; transition:all .2s; }
+        .proof a:hover { border-color:var(--accent); transform:translateY(-3px); }
         .proof .num { font-size:1.5rem; font-weight:800; color:var(--accent); }
         .proof .label { font-size:.8rem; color:var(--muted); }
 
         .steps { display:grid; grid-template-columns:repeat(3,1fr); gap:24px; padding:60px 0; }
-        .step { background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:32px; text-align:center; }
+        .step { background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:32px; text-align:center; color:inherit; text-decoration:none; transition:all .2s; display:block; }
+        .step:hover { border-color:var(--accent); transform:translateY(-3px); }
         .step .icon { font-size:2.5rem; margin-bottom:12px; }
         .step h3 { margin-bottom:8px; }
         .step p { color:var(--muted); font-size:.9rem; }
@@ -41,11 +43,13 @@
         .styles h2 { font-size:2rem; margin-bottom:12px; }
         .styles > p { color:var(--muted); margin-bottom:32px; }
         .style-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
-        .style-card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:24px 16px; text-align:center; transition:all .2s; }
+        .style-card { background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:24px 16px; text-align:center; transition:all .2s; color:inherit; text-decoration:none; display:block; }
         .style-card:hover { border-color:var(--accent); transform:translateY(-3px); }
         .style-card .emoji { font-size:2.5rem; margin-bottom:8px; }
         .style-card .name { font-weight:600; margin-bottom:4px; }
         .style-card .desc { font-size:.8rem; color:var(--muted); }
+        .style-card, .step, .proof div { cursor:pointer; text-decoration:none; color:inherit; display:block; }
+        .style-card:hover, .step:hover, .proof div:hover { border-color:var(--accent); transform:translateY(-3px); }
 
         .pricing { padding:60px 0; }
         .pricing h2 { text-align:center; font-size:2rem; margin-bottom:40px; }
@@ -85,40 +89,40 @@
     </div>
 
     <div class="proof">
-        <div><div class="num">6</div><div class="label">漫畫風格</div></div>
-        <div><div class="num">1</div><div class="label">角色一致性</div></div>
-        <div><div class="num">30s</div><div class="label">每格生成</div></div>
-        <div><div class="num">∞</div><div class="label">對話氣泡</div></div>
+        <a href="/login"><div class="num">6</div><div class="label">漫畫風格</div></a>
+        <a href="/login"><div class="num">1</div><div class="label">角色一致性</div></a>
+        <a href="/login"><div class="num">30s</div><div class="label">每格生成</div></a>
+        <a href="/login"><div class="num">∞</div><div class="label">對話氣泡</div></a>
     </div>
 
     <div class="steps">
-        <div class="step">
+        <a href="/login" class="step">
             <div class="icon">👤</div>
             <h3>上傳角色圖</h3>
             <p>一張參考圖鎖定角色外觀，每格都長一樣</p>
-        </div>
-        <div class="step">
+        </a>
+        <a href="/login" class="step">
             <div class="icon">✍️</div>
             <h3>寫故事</h3>
             <p>每格描述場景 + 對話，AI 理解你的劇本</p>
-        </div>
-        <div class="step">
+        </a>
+        <a href="/login" class="step">
             <div class="icon">📖</div>
             <h3>出漫畫</h3>
             <p>自動生成多格漫畫，含對話氣泡，直接截圖發佈</p>
-        </div>
+        </a>
     </div>
 
     <div class="styles">
         <h2>6 種漫畫風格</h2>
         <p>從經典日系到可愛 Q 版，滿足各種創作需求</p>
         <div class="style-grid">
-            <div class="style-card"><div class="emoji">📖</div><div class="name">日系黑白</div><div class="desc">經典 Manga 網點風格</div></div>
-            <div class="style-card"><div class="emoji">🎨</div><div class="name">日系彩色</div><div class="desc">動畫賽璐璐上色</div></div>
-            <div class="style-card"><div class="emoji">📱</div><div class="name">Webtoon</div><div class="desc">韓系條漫直式閱讀</div></div>
-            <div class="style-card"><div class="emoji">💥</div><div class="name">美式漫畫</div><div class="desc">英雄風格粗線條</div></div>
-            <div class="style-card"><div class="emoji">💧</div><div class="name">水彩繪本</div><div class="desc">溫暖柔和繪本感</div></div>
-            <div class="style-card"><div class="emoji">😊</div><div class="name">Q版可愛</div><div class="desc">大頭萌系角色</div></div>
+            <a href="/login" class="style-card"><div class="emoji">📖</div><div class="name">日系黑白</div><div class="desc">經典 Manga 網點風格</div></a>
+            <a href="/login" class="style-card"><div class="emoji">🎨</div><div class="name">日系彩色</div><div class="desc">動畫賽璐璐上色</div></a>
+            <a href="/login" class="style-card"><div class="emoji">📱</div><div class="name">Webtoon</div><div class="desc">韓系條漫直式閱讀</div></a>
+            <a href="/login" class="style-card"><div class="emoji">💥</div><div class="name">美式漫畫</div><div class="desc">英雄風格粗線條</div></a>
+            <a href="/login" class="style-card"><div class="emoji">💧</div><div class="name">水彩繪本</div><div class="desc">溫暖柔和繪本感</div></a>
+            <a href="/login" class="style-card"><div class="emoji">😊</div><div class="name">Q版可愛</div><div class="desc">大頭萌系角色</div></a>
         </div>
     </div>
 

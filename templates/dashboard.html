@@ -21,45 +21,121 @@
         .bar { background:rgba(255,255,255,.05); border-radius:999px; height:6px; overflow:hidden; margin:10px 0; }
         .bar .fill { height:100%; border-radius:999px; }
         .projects { display:grid; grid-template-columns:repeat(auto-fill,minmax(250px,1fr)); gap:12px; }
-        .proj { background:rgba(0,0,0,.2); border-radius:10px; padding:16px; }
+        .proj { background:rgba(0,0,0,.2); border-radius:10px; padding:16px; cursor:pointer; transition: all .2s; }
+        .proj:hover { border:1px solid var(--accent); }
         .proj .title { font-weight:600; margin-bottom:4px; }
         .proj .meta { font-size:.8rem; color:var(--muted); }
+        .proj .status { display:inline-block; font-size:.7rem; padding:2px 8px; border-radius:999px; margin-top:6px; }
+        .proj .status.done { background:rgba(34,197,94,.15); color:#22c55e; }
+        .proj .status.generating { background:rgba(245,158,11,.15); color:#f59e0b; }
+        .proj .status.error { background:rgba(239,68,68,.15); color:#ef4444; }
+        .proj .status.draft { background:rgba(136,136,136,.15); color:#888; }
         .empty { text-align:center; padding:40px; color:var(--muted); }
+        .loading-screen { display:flex; align-items:center; justify-content:center; min-height:100vh; flex-direction:column; gap:16px; }
+        .loading-screen i { font-size:2rem; color:var(--accent); }
+        .spin { animation:spin 1s linear infinite; }
+        @keyframes spin { to { transform:rotate(360deg); } }
     </style>
 </head>
 <body>
+<div id="loading" class="loading-screen">
+    <i class="fa-solid fa-spinner spin"></i>
+    <span style="color:var(--muted);">載入中...</span>
+</div>
+
+<div id="content" style="display:none;">
 <nav class="nav">
     <div class="logo" style="font-weight:700;">📖 ComicForge 漫鍛</div>
-    <div style="display:flex;gap:14px;"><a href="/app" style="font-size:.85rem;">創作</a><a href="/api/logout" style="font-size:.85rem;color:var(--muted);">登出</a></div>
+    <div style="display:flex;gap:14px;"><a href="/app" style="font-size:.85rem;">創作</a><a href="#" onclick="doLogout()" style="font-size:.85rem;color:var(--muted);">登出</a></div>
 </nav>
 <div class="container">
     <h1>儀表板</h1>
     <div class="stats">
-        <div class="stat"><div class="num" style="color:var(--accent);">{{ user.panels_used }}</div><div class="label">已使用格數</div></div>
-        <div class="stat"><div class="num" style="color:#22c55e;">{{ user.panels_limit - user.panels_used }}</div><div class="label">剩餘格數</div></div>
-        <div class="stat"><div class="num">{{ user.plan.upper() }}</div><div class="label">目前方案</div></div>
+        <div class="stat"><div class="num" style="color:var(--accent);" id="usedNum">0</div><div class="label">已使用格數</div></div>
+        <div class="stat"><div class="num" style="color:#22c55e;" id="remainNum">0</div><div class="label">剩餘格數</div></div>
+        <div class="stat"><div class="num" id="planNum">FREE</div><div class="label">目前方案</div></div>
     </div>
     <div class="card">
         <h3><i class="fa-solid fa-chart-bar"></i> 本月用量</h3>
-        {% set pct = (user.panels_used / user.panels_limit * 100) | int if user.panels_limit > 0 else 0 %}
-        <div class="bar"><div class="fill" style="width:{{ pct }}%;background:{{ '#ef4444' if pct > 80 else 'var(--accent)' }};"></div></div>
-        <p style="font-size:.85rem;color:var(--muted);">{{ user.panels_used }}/{{ user.panels_limit }} 格 ({{ pct }}%)</p>
+        <div class="bar"><div class="fill" id="usageBar" style="width:0%;background:var(--accent);"></div></div>
+        <p style="font-size:.85rem;color:var(--muted);" id="usageText">0/20 格 (0%)</p>
     </div>
     <div class="card">
         <h3><i class="fa-solid fa-clock-rotate-left"></i> 漫畫專案</h3>
-        {% if projects %}
-        <div class="projects">
-            {% for p in projects %}
-            <div class="proj">
-                <div class="title">{{ p.title }}</div>
-                <div class="meta">{{ p.style }} · {{ p.status }} · {{ p.created_at.strftime('%m/%d %H:%M') }}</div>
-            </div>
-            {% endfor %}
+        <div id="projectsList">
+            <div class="empty"><i class="fa-solid fa-spinner spin"></i> 載入中...</div>
         </div>
-        {% else %}
-        <div class="empty">尚無專案，<a href="/app">開始創作！</a></div>
-        {% endif %}
     </div>
 </div>
+</div>
+
+<script>
+function getToken() { return localStorage.getItem('cf_token'); }
+function authHeaders() { return { 'Authorization': 'Bearer ' + getToken() }; }
+
+function doLogout() {
+    fetch('/api/logout', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' } }).catch(()=>{});
+    localStorage.removeItem('cf_token');
+    window.location.href = '/login';
+}
+
+async function init() {
+    const token = getToken();
+    if (!token) { window.location.href = '/login'; return; }
+
+    try {
+        const [meRes, projRes] = await Promise.all([
+            fetch('/api/me', { headers: authHeaders() }),
+            fetch('/api/projects', { headers: authHeaders() })
+        ]);
+
+        if (meRes.status === 401) { window.location.href = '/login'; return; }
+
+        const me = await meRes.json();
+        const projects = await projRes.json();
+
+        // Stats
+        const used = me.limit_info.used;
+        const limit = me.limit_info.limit;
+        const remain = Math.max(0, limit - used);
+        const pct = limit > 0 ? Math.round(used / limit * 100) : 0;
+
+        document.getElementById('usedNum').textContent = used;
+        document.getElementById('remainNum').textContent = remain;
+        document.getElementById('planNum').textContent = me.limit_info.plan.toUpperCase();
+        document.getElementById('usageBar').style.width = pct + '%';
+        document.getElementById('usageBar').style.background = pct > 80 ? '#ef4444' : 'var(--accent)';
+        document.getElementById('usageText').textContent = `${used}/${limit} 格 (${pct}%)`;
+
+        // Projects
+        const projEl = document.getElementById('projectsList');
+        if (projects.length) {
+            let html = '<div class="projects">';
+            projects.forEach(p => {
+                const statusLabels = { done: '完成', generating: '生成中', error: '錯誤', draft: '草稿' };
+                const d = new Date(p.created);
+                const dateStr = `${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getDate().toString().padStart(2,'0')} ${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+                html += `<div class="proj">
+                    <div class="title">${p.title}</div>
+                    <div class="meta">${p.style} · ${p.total_panels} 格 · ${dateStr}</div>
+                    <span class="status ${p.status}">${statusLabels[p.status] || p.status}</span>
+                </div>`;
+            });
+            html += '</div>';
+            projEl.innerHTML = html;
+        } else {
+            projEl.innerHTML = '<div class="empty">尚無專案，<a href="/app">開始創作！</a></div>';
+        }
+
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('content').style.display = 'block';
+    } catch (e) {
+        console.error('Dashboard error:', e);
+        window.location.href = '/login';
+    }
+}
+
+init();
+</script>
 </body>
 </html>
