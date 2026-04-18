@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * { margin:0; padding:0; box-sizing:border-box; }
-        :root { --bg:#0a0a0f; --panel:#12121a; --border:#1e1e2e; --text:#eee; --muted:#888; --accent:#f59e0b; }
+        :root { --bg:#0a0a0f; --panel:#12121a; --border:#1e1e2e; --text:#eee; --muted:#888; --accent:#f59e0b; --purple:#a78bfa; }
         body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Noto Sans TC',sans-serif; background:var(--bg); color:var(--text); }
         a { color:var(--accent); text-decoration:none; }
         .nav { display:flex; justify-content:space-between; align-items:center; padding:14px 20px; border-bottom:1px solid var(--border); }
@@ -38,249 +38,15 @@
         .panel-editor .dialogue { min-height:35px; font-size:.85rem; }
         .add-panel { width:100%; padding:10px; background:transparent; border:1px dashed var(--border); border-radius:8px; color:var(--muted); cursor:pointer; font-size:.85rem; margin-bottom:16px; }
         .add-panel:hover { border-color:var(--accent); color:var(--accent); }
-# ========== AI Script Generator =========
-@app.route("/api/script/generate", methods=["POST"])
-@login_required
-def generate_script():
-    """AI generates panel descriptions from a story premise"""
-    d = request.get_json()
-    premise = d.get("premise", "").strip()
-    num_panels = min(int(d.get("panels", 4)), 12)  # Max 12 panels
-    style_id = d.get("style", "manga_color")
-    
-    if not premise:
-        return jsonify({"error": "請輸入故事前提"}), 400
-    
-    style = next((s for s in ART_STYLES if s["id"] == style_id), ART_STYLES[0])
-    
-    # Generate panel breakdown using simple story structure
-    panels = _generate_panel_descriptions(premise, num_panels, style)
-    
-    return jsonify({"success": True, "panels": panels, "style": style_id})
-
-
-def _generate_panel_descriptions(premise, num_panels, style):
-    """Generate comic panel descriptions from a story premise"""
-    import re
-    
-    # Try calling Hermes API for smart generation
-    HERMES_URL = os.environ.get("HERMES_API_URL", "http://localhost:8642/v1/chat/completions")
-    HERMES_KEY = os.environ.get("HERMES_API_KEY", "wpZIYk6cmsU3KVn0")
-    
-    try:
-        import requests as http_requests
-        resp = http_requests.post(HERMES_URL, 
-            headers={"Authorization": f"Bearer {HERMES_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": "hermes",
-                "messages": [
-                    {"role": "system", "content": f"""你是漫畫劇本助手。根據故事前提，生成 {num_panels} 格漫畫的分鏡描述。
-每格需要：
-- description: 畫面描述（英文，詳細的視覺描述，包含角色動作、表情、場景、構圖）
-- dialogue: 對話（中文，選填，簡短自然）
-
-風格：{style['name']}
-
-回傳 JSON 陣列格式，例如：
-[{{"description": "A young hero standing on a rooftop at sunset, cape flowing...", "dialogue": "我一定要守護這個城市！"}}]
-
-只回傳 JSON，不要其他文字。"""},
-                    {"role": "user", "content": f"故事前提：{premise}"}
-                ],
-                "temperature": 0.7,
-                "max_tokens": 2000
-            },
-            timeout=30
-        )
-        
-        if resp.status_code == 200:
-            result = resp.json()
-            content = result["choices"][0]["message"]["content"]
-            # Parse JSON from response
-            panels = json.loads(content)
-            if isinstance(panels, list) and len(panels) > 0:
-                return panels[:num_panels]
-    except Exception as e:
-        print(f"[ComicForge] AI script generation failed: {e}, using fallback")
-    
-    # Fallback: template-based generation
-    return _fallback_script(premise, num_panels)
-
-
-def _fallback_script(premise, num_panels):
-    """Fallback script generation without AI"""
-    templates = [
-        {"description": f"Opening scene showing the beginning of: {premise}. Wide establishing shot with dramatic lighting.", "dialogue": ""},
-        {"description": f"Close-up of the main character reacting to events in: {premise}. Expressive face showing determination.", "dialogue": ""},
-        {"description": f"Action scene related to: {premise}. Dynamic composition with motion blur effects.", "dialogue": ""},
-        {"description": f"Climactic moment of: {premise}. Dramatic angle with strong contrast lighting.", "dialogue": ""},
-        {"description": f"Resolution scene for: {premise}. Peaceful atmosphere with soft lighting.", "dialogue": ""},
-        {"description": f"Emotional moment from: {premise}. Close-up on character's face showing deep feelings.", "dialogue": ""},
-        {"description": f"Wide shot showing the environment and setting of: {premise}. Detailed background.", "dialogue": ""},
-        {"description": f"Final panel summarizing: {premise}. Satisfying conclusion with warm tones.", "dialogue": ""},
-    ]
-    return templates[:num_panels]
-
-
-# ========== Comic Export =========
-@app.route("/api/comic/<int:proj_id>/export", methods=["POST"])
-@login_required
-def export_comic(proj_id):
-    """Export comic as a combined strip image"""
-    from PIL import Image as PILImage
-    
-    u = current_user()
-    proj = db.session.get(ComicProject, proj_id)
-    if not proj or proj.user_id != u.id:
-        return jsonify({"error": "找不到"}), 404
-    
-    panels = Panel.query.filter_by(project_id=proj_id).order_by(Panel.panel_num).all()
-    if not panels or not all(p.output_file for p in panels):
-        return jsonify({"error": "漫畫尚未完成生成"}), 400
-    
-    layout = request.get_json().get("layout", "vertical") if request.is_json else "vertical"
-    
-    images = []
-    for p in panels:
-        path = os.path.join(app.config["UPLOAD_FOLDER"], p.output_file)
-        if os.path.exists(path):
-            images.append(PILImage.open(path))
-    
-    if not images:
-        return jsonify({"error": "找不到漫畫圖片"}), 404
-    
-    # Combine based on layout
-    gap = 8
-    if layout == "vertical":
-        # Webtoon style - vertical strip
-        w = max(img.width for img in images)
-        total_h = sum(img.height for img in images) + gap * (len(images) - 1)
-        strip = PILImage.new("RGB", (w, total_h), (10, 10, 15))
-        y = 0
-        for img in images:
-            x = (w - img.width) // 2
-            strip.paste(img, (x, y))
-            y += img.height + gap
-    elif layout == "2x2":
-        # Grid 2 columns
-        cols = 2
-        rows = (len(images) + cols - 1) // cols
-        cell_w = max(img.width for img in images)
-        cell_h = max(img.height for img in images)
-        strip = PILImage.new("RGB", (cols * cell_w + gap * (cols - 1), rows * cell_h + gap * (rows - 1)), (10, 10, 15))
-        for i, img in enumerate(images):
-            row, col = i // cols, i % cols
-            x = col * (cell_w + gap)
-            y = row * (cell_h + gap)
-            strip.paste(img, (x, y))
-    else:  # horizontal
-        total_w = sum(img.width for img in images) + gap * (len(images) - 1)
-        h = max(img.height for img in images)
-        strip = PILImage.new("RGB", (total_w, h), (10, 10, 15))
-        x = 0
-        for img in images:
-            y = (h - img.height) // 2
-            strip.paste(img, (x, y))
-            x += img.width + gap
-    
-    # Save strip
-    export_name = f"comic_strip_{proj_id}_{layout}.png"
-    export_path = os.path.join(app.config["UPLOAD_FOLDER"], export_name)
-    strip.save(export_path, quality=95)
-    
-    return jsonify({
-        "success": True,
-        "url": f"/api/image/{export_name}",
-        "width": strip.width,
-        "height": strip.height
-    })
-
-
-# ========== Async Generation (Background) =========
-import threading
-_gen_lock = threading.Lock()
-
-@app.route("/api/comic/create-async", methods=["POST"])
-@login_required
-def create_comic_async():
-    """Create comic with async background generation (non-blocking)"""
-    u = current_user()
-    d = request.get_json()
-
-    title = d.get("title", "我的漫畫")
-    style_id = d.get("style", "manga_color")
-    character_id = d.get("character_id")
-    panels_desc = d.get("panels", [])
-
-    if not panels_desc:
-        return jsonify({"error": "請輸入至少一格漫畫描述"}), 400
-    panels_needed = len(panels_desc)
-    if u.panels_used + panels_needed > u.panels_limit:
-        return jsonify({"error": f"額度不足！需要 {panels_needed} 格，剩餘 {u.panels_limit - u.panels_used} 格", "limit_info": u.limit_info()}), 402
-
-    proj = ComicProject(
-        user_id=u.id, title=title, style=style_id,
-        character_id=character_id,
-        panels_json=json.dumps(panels_desc, ensure_ascii=False),
-        status="generating",
-        total_panels=panels_needed,
-        completed_panels=0,
-        progress=0
-    )
-    db.session.add(proj)
-    db.session.commit()
-
-    for i, pd in enumerate(panels_desc):
-        p = Panel(project_id=proj.id, panel_num=i + 1,
-                  description=pd.get("description", ""),
-                  dialogue=pd.get("dialogue", ""))
-        db.session.add(p)
-    db.session.commit()
-
-    # Reserve panels
-    u.panels_used += panels_needed
-    db.session.commit()
-
-    # Start background generation
-    def _bg_generate():
-        with _gen_lock:
-            with app.app_context():
-                style = next((s for s in ART_STYLES if s["id"] == style_id), ART_STYLES[0])
-                char = db.session.get(Character, character_id) if character_id else None
-                try:
-                    generate_all_panels(proj.id, style, char)
-                    p = db.session.get(ComicProject, proj.id)
-                    p.status = "done"
-                    p.progress = 100
-                    p.completed_panels = panels_needed
-                    db.session.commit()
-                except Exception as e:
-                    print(f"[ComicForge] Async generation error: {e}")
-                    p = db.session.get(ComicProject, proj.id)
-                    p.status = "error"
-                    db.session.commit()
-
-    thread = threading.Thread(target=_bg_generate, daemon=True)
-    thread.start()
-
-    return jsonify({"success": True, "id": proj.id, "status": "generating", "panels": panels_needed})
-
-
-# ========== Get Comic ==========<｜end▁of▁thinking｜>Let me update the get_comic route to also include the async progress info properly, then update the frontend to support these new features.
-
-Actually, let me also check what the get_comic route looks like and update the app.html to support the new features. Let me do the frontend update.</think>Now let me add the AI script button and export features to the frontend:<tool_call>
-<function=patch>
-<parameter=new_string>        .gen-btn { width:100%; padding:14px; background:var(--accent); color:#0a0a0f; border:none; border-radius:10px; font-size:1rem; font-weight:700; cursor:pointer; transition:all .2s; }
+        .gen-btn { width:100%; padding:14px; background:var(--accent); color:#0a0a0f; border:none; border-radius:10px; font-size:1rem; font-weight:700; cursor:pointer; transition:all .2s; }
         .gen-btn:hover { background:#e08e00; }
         .gen-btn:disabled { opacity:.5; cursor:not-allowed; }
-        .ai-btn { width:100%; padding:10px; background:rgba(139,92,246,.15); border:1px solid rgba(139,92,246,.3); border-radius:8px; color:#a78bfa; cursor:pointer; font-size:.85rem; margin-bottom:12px; transition:all .2s; }
+        .ai-btn { width:100%; padding:10px; background:rgba(139,92,246,.15); border:1px solid rgba(139,92,246,.3); border-radius:8px; color:var(--purple); cursor:pointer; font-size:.85rem; margin-bottom:12px; transition:all .2s; }
         .ai-btn:hover { background:rgba(139,92,246,.25); }
         .ai-btn:disabled { opacity:.5; cursor:not-allowed; }
         .premise-input { width:100%; background:rgba(0,0,0,.3); border:1px solid var(--border); border-radius:8px; padding:10px; color:#fff; font-size:.9rem; resize:vertical; min-height:60px; outline:none; margin-bottom:8px; }
-        .premise-input:focus { border-color:#a78bfa; }
-        .export-bar { display:flex; gap:8px; margin-top:12px; }
-        .export-btn { flex:1; padding:8px; background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:8px; color:var(--text); cursor:pointer; font-size:.8rem; text-align:center; }
-        .export-btn:hover { border-color:var(--accent); background:rgba(245,158,11,.1); }
+        .premise-input:focus { border-color:var(--purple); }
+        .ai-panel-select { flex:1; background:rgba(0,0,0,.3); border:1px solid var(--border); border-radius:6px; padding:6px 10px; color:#fff; font-size:.85rem; outline:none; }
         .result { min-height:400px; }
         .comic-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }
         .comic-panel { background:var(--panel); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
@@ -290,6 +56,10 @@ Actually, let me also check what the get_comic route looks like and update the a
         .empty i { font-size:3rem; opacity:.3; display:block; margin-bottom:12px; }
         .spin { animation:spin 1s linear infinite; }
         @keyframes spin { to { transform:rotate(360deg); } }
+        .progress-text { font-size:.85rem; color:var(--muted); margin-top:8px; }
+        .export-bar { display:flex; gap:8px; margin-top:12px; }
+        .export-btn { flex:1; padding:8px; background:rgba(255,255,255,.05); border:1px solid var(--border); border-radius:8px; color:var(--text); cursor:pointer; font-size:.8rem; text-align:center; transition:all .2s; }
+        .export-btn:hover { border-color:var(--accent); background:rgba(245,158,11,.1); }
         @media(max-width:768px) { .main { grid-template-columns:1fr; } }
     </style>
 </head>
@@ -306,7 +76,7 @@ Actually, let me also check what the get_comic route looks like and update the a
 
 <div class="main">
     <div>
-        <!-- Character -->
+        <!-- Character Upload -->
         <div class="panel" style="margin-bottom:14px;">
             <h3><i class="fa-solid fa-user"></i> 角色參考圖</h3>
             <div class="char-upload" id="charUpload" onclick="document.getElementById('charInput').click()">
@@ -320,20 +90,12 @@ Actually, let me also check what the get_comic route looks like and update the a
             </div>
         </div>
 
-        <!-- Style -->
-        <div class="panel" style="margin-bottom:14px;">
-            <h3><i class="fa-solid fa-palette"></i> 漫畫風格</h3>
-            <div class="style-grid" id="styleGrid">
-                <div style="color:var(--muted);font-size:.85rem;">載入風格中...</div>
-            </div>
-        </div>
-
-        <!-- AI Script -->
+        <!-- AI Script Generator -->
         <div class="panel" style="margin-bottom:14px;">
             <h3><i class="fa-solid fa-wand-magic-sparkles"></i> AI 劇本助手</h3>
             <textarea class="premise-input" id="premiseInput" placeholder="輸入故事前提，例如：一個少年意外獲得超能力，開始他的英雄之路..."></textarea>
             <div style="display:flex;gap:6px;margin-bottom:8px;">
-                <select id="aiPanelCount" style="flex:1;background:rgba(0,0,0,.3);border:1px solid var(--border);border-radius:6px;padding:6px 10px;color:#fff;font-size:.85rem;outline:none;">
+                <select class="ai-panel-select" id="aiPanelCount">
                     <option value="4">4 格</option>
                     <option value="6">6 格</option>
                     <option value="8">8 格</option>
@@ -343,6 +105,14 @@ Actually, let me also check what the get_comic route looks like and update the a
             <button class="ai-btn" id="aiBtn" onclick="aiGenerate()">
                 <i class="fa-solid fa-hat-wizard"></i> 自動生成分鏡
             </button>
+        </div>
+
+        <!-- Art Style -->
+        <div class="panel" style="margin-bottom:14px;">
+            <h3><i class="fa-solid fa-palette"></i> 漫畫風格</h3>
+            <div class="style-grid" id="styleGrid">
+                <div style="color:var(--muted);font-size:.85rem;">載入風格中...</div>
+            </div>
         </div>
 
         <!-- Panels -->
@@ -386,22 +156,19 @@ if (!CF.requireLogin()) throw '';
 let selectedStyle = '';
 let charFile = null;
 let panelCount = 1;
-let userInfo = {};
+let currentProjId = null;
 
-// Load user info + styles
+// Init
 async function init() {
     const [meRes, stylesRes] = await Promise.all([
         CF.apiFetch('/api/me'),
         CF.apiFetch('/api/styles')
     ]);
-
     if (meRes.ok) {
-        userInfo = meRes.data;
-        const li = userInfo.limit_info;
+        const li = meRes.data.limit_info;
         document.getElementById('usageDisplay').innerHTML = `已用 <strong>${li.used}</strong>/${li.limit} 格`;
         document.getElementById('planBadge').textContent = li.plan.toUpperCase();
     }
-
     if (stylesRes.ok) {
         const styles = stylesRes.data;
         selectedStyle = styles[0].id;
@@ -451,6 +218,7 @@ function addPanel() {
     document.getElementById('panelList').appendChild(div);
 }
 
+// Generate comic (async)
 async function generate() {
     const descs = [];
     document.querySelectorAll('.panel-editor').forEach(el => {
@@ -459,75 +227,53 @@ async function generate() {
             dialogue: el.querySelector('.dialogue').value
         });
     });
-
     if (!descs.some(d => d.description)) return alert('請至少輸入一格描述！');
 
     const btn = document.getElementById('genBtn');
     const res = document.getElementById('result');
     btn.disabled = true;
     btn.innerHTML = '<i class="fa-solid fa-spinner spin"></i> 生成中...';
-    res.innerHTML = '<div class="empty"><i class="fa-solid fa-spinner spin" style="font-size:2.5rem;color:var(--accent);"></i><p>AI 正在繪製漫畫...</p><p id="progressText" style="font-size:.85rem;color:var(--muted);margin-top:8px;"></p></div>';
+    res.innerHTML = '<div class="empty"><i class="fa-solid fa-spinner spin" style="font-size:2.5rem;color:var(--accent);"></i><p>AI 正在繪製漫畫...</p><p class="progress-text" id="progressText"></p></div>';
 
     try {
-        // Use async endpoint
         const { ok, data } = await CF.apiFetch('/api/comic/create-async', {
             method: 'POST',
-            body: {
-                title: '我的漫畫',
-                style: selectedStyle,
-                character_id: window._charId || null,
-                panels: descs
-            }
+            body: { title: '我的漫畫', style: selectedStyle, character_id: window._charId || null, panels: descs }
         });
-
         if (ok && data.success) {
-            window._currentProjId = data.id;
+            currentProjId = data.id;
             pollProgress(data.id);
         } else {
-            res.innerHTML = `<div class="empty"><p style="color:#ef4444;">${data.error || '生成失敗'}</p></div>`;
-            btn.disabled = false;
-            btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> 生成漫畫';
+            showError(data.error || '生成失敗');
         }
     } catch(e) {
-        res.innerHTML = `<div class="empty"><p style="color:#ef4444;">錯誤：${e.message}</p></div>`;
-        btn.disabled = false;
-        btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> 生成漫畫';
+        showError('錯誤：' + e.message);
     }
 }
 
-async function pollProgress(projId) {
+function pollProgress(projId) {
     const interval = setInterval(async () => {
         try {
             const cr = await CF.apiFetch('/api/comic/' + projId);
-            if (cr.ok) {
-                const cd = cr.data;
-                const pt = document.getElementById('progressText');
-                if (pt) pt.textContent = `進度：${cd.completed_panels}/${cd.total_panels} 格 (${cd.progress}%)`;
+            if (!cr.ok) return;
+            const cd = cr.data;
+            const pt = document.getElementById('progressText');
+            if (pt) pt.textContent = `進度：${cd.completed_panels}/${cd.total_panels} 格 (${cd.progress}%)`;
 
-                if (cd.status === 'done') {
-                    clearInterval(interval);
-                    showComicResult(cd);
-                    if (cd.limit_info) {
-                        document.getElementById('usageDisplay').innerHTML = `已用 <strong>${cd.limit_info.used}</strong>/${cd.limit_info.limit} 格`;
-                    }
-                    const btn = document.getElementById('genBtn');
-                    btn.disabled = false;
-                    btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> 生成漫畫';
-                } else if (cd.status === 'error') {
-                    clearInterval(interval);
-                    document.getElementById('result').innerHTML = `<div class="empty"><p style="color:#ef4444;">生成過程發生錯誤，請重試</p></div>`;
-                    const btn = document.getElementById('genBtn');
-                    btn.disabled = false;
-                    btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> 生成漫畫';
-                }
+            if (cd.status === 'done') {
+                clearInterval(interval);
+                showResult(cd);
+                resetBtn();
+            } else if (cd.status === 'error') {
+                clearInterval(interval);
+                showError('生成過程發生錯誤，請重試');
+                resetBtn();
             }
-        } catch(e) {
-            // Continue polling
-        }
-    }, 2000); // Poll every 2 seconds
+        } catch(e) {}
+    }, 2000);
 }
 
-function showComicResult(cd) {
+function showResult(cd) {
     const res = document.getElementById('result');
     let html = '<div class="comic-grid">';
     cd.panels.forEach(p => {
@@ -540,6 +286,20 @@ function showComicResult(cd) {
     html += '</div>';
     res.innerHTML = html;
     document.getElementById('exportBar').style.display = 'flex';
+    // Update usage
+    if (cd.limit_info) {
+        document.getElementById('usageDisplay').innerHTML = `已用 <strong>${cd.limit_info.used}</strong>/${cd.limit_info.limit} 格`;
+    }
+}
+
+function showError(msg) {
+    document.getElementById('result').innerHTML = `<div class="empty"><p style="color:#ef4444;">${msg}</p></div>`;
+}
+
+function resetBtn() {
+    const btn = document.getElementById('genBtn');
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> 生成漫畫';
 }
 
 // AI Script Generation
@@ -559,11 +319,9 @@ async function aiGenerate() {
         });
 
         if (ok && data.success) {
-            // Clear existing panels and fill with AI-generated ones
             const panelList = document.getElementById('panelList');
             panelList.innerHTML = '';
             panelCount = 0;
-
             data.panels.forEach((p, i) => {
                 panelCount++;
                 const div = document.createElement('div');
@@ -588,13 +346,10 @@ async function aiGenerate() {
 }
 
 // Export
-let currentProjId = null;
 async function exportComic(layout) {
-    const projId = window._currentProjId;
-    if (!projId) return alert('請先生成漫畫！');
-
+    if (!currentProjId) return alert('請先生成漫畫！');
     try {
-        const { ok, data } = await CF.apiFetch(`/api/comic/${projId}/export`, {
+        const { ok, data } = await CF.apiFetch(`/api/comic/${currentProjId}/export`, {
             method: 'POST',
             body: { layout }
         });
